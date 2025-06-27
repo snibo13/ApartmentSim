@@ -1,0 +1,14 @@
+{
+    "scene_sets": [],
+    "scenes": {
+      "my_apartment": {
+        "scene_instance": "my_apartment.scene_instance.json"
+      }
+    },
+    "stage_attributes": {
+      "my_apartment.glb": {
+        "render_asset": "apartment.glb"
+      }
+    }
+  }
+  
