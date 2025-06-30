@@ -1,0 +1,5 @@
+bpy
+numpy<2
+transformers
+torch
+matplotlib
