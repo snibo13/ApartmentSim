@@ -13,7 +13,7 @@ class BlenderRenderer:
     frame rendering, and headless streaming.
     """
 
-    def __init__(self, blend_filepath, camera_name="robo_cam"):
+    def __init__(self, blend_filepath, camera_names=["robo_cam"]):
         """
         Initializes the BlenderRenderer.
 
@@ -22,7 +22,7 @@ class BlenderRenderer:
             camera_name (str): The name of the camera object to use for rendering.
         """
         self.blend_filepath = blend_filepath
-        self.camera_name = camera_name
+        self.camera_names = camera_names
         self.current_rendered_frame = (
             None  # To store the last rendered frame as a NumPy array
         )
@@ -68,16 +68,13 @@ class BlenderRenderer:
         bpy.context.scene.render.resolution_percentage = 100
         # bpy.context.scene.render.use_simplify = True
 
-        if self.camera_name in bpy.data.objects:
-            self.scene.camera = bpy.data.objects[self.camera_name]
-        else:
-            print(
-                f"WARNING: Camera '{self.camera_name}' not found. Using active camera if available."
-            )
-            if not self.scene.camera:
-                print(
-                    "ERROR: No camera found in scene. Please add a camera or specify a valid camera name."
-                )
+        for camera_name in self.camera_names:
+            print(f"Checking for camera: {camera_name}")
+            if camera_name in bpy.data.objects:
+                print(f"Found camera: {camera_name}")
+                self.scene.camera = bpy.data.objects[camera_name]
+            else:
+                print(f"ERROR: Camera '{camera_name}' not found in the scene.")
                 sys.exit(1)
 
         self.scene.render.image_settings.file_format = "PNG"
@@ -139,7 +136,13 @@ class BlenderRenderer:
 
         # This calculation needs to correctly handle `sensor_fit`
         # and pixel aspect ratio.
+        print(f"Render resolution: {render_width}x{render_height}")
+        print(f"Sensor size: {sensor_width_in_mm}mm x {sensor_height_in_mm}mm")
         pixel_aspect_ratio = render_props.pixel_aspect_x / render_props.pixel_aspect_y
+        print(f"Pixel aspect ratio: {pixel_aspect_ratio}")
+        print(
+            f"Pixel aspect ratio: {render_props.pixel_aspect_x} / {render_props.pixel_aspect_y}"
+        )
 
         # Determine the effective sensor size based on `sensor_fit`
         if cam_data.sensor_fit == "VERTICAL":
@@ -152,6 +155,10 @@ class BlenderRenderer:
             # Height scales with aspect ratio.
             s_u = render_width / sensor_width_in_mm
             s_v = render_height / (sensor_width_in_mm / pixel_aspect_ratio)
+            print(f"Render height: {render_height}, Sensor width: {sensor_width_in_mm}")
+            print(
+                f"Using horizontal sensor fit: s_u={s_u}, s_v={s_v} (aspect ratio {pixel_aspect_ratio})"
+            )
 
         fx = f_in_mm * s_u
         fy = f_in_mm * s_v
@@ -175,6 +182,9 @@ class BlenderRenderer:
         cy = (
             render_height / 2.0 + cam_data.shift_y * s_v
         )  # Y-axis inversion for CV convention
+
+        print(f"Focal lengths: fx={fx}, fy={fy}")
+        print(f"Principal point: cx={cx}, cy={cy}")
 
         # If sensor_fit is VERTICAL, then shift_x and shift_y are relative to sensor_height
         # and render_height, and need to be scaled by aspect ratio.
@@ -235,6 +245,14 @@ class BlenderRenderer:
             print(f"ERROR: Could not read image from temporary file {temp_filepath}")
             self.current_rendered_frame = None
             return None
+
+    def render_frames_to_numpy(self):
+        imgs = []
+        for camera_name in self.camera_names:
+            print(f"Setting active camera: {camera_name}")
+            self.scene.camera = bpy.data.objects[camera_name]
+            imgs.append(self.render_frame_to_numpy())
+        return imgs
 
     def read_current_frame_from_file(
         self, filepath="rendered_frames/current_frame.png"
@@ -335,29 +353,30 @@ class BlenderRenderer:
             ry (float): Rotation around Y axis (in degrees).
             rz (float): Rotation around Z axis (in degrees).
         """
-        camera = self.scene.camera
-        if camera:
-            # Apply location changes
-            camera.location.x += dx
-            camera.location.y += dy
-            camera.location.z += dz
+        for camera_name in self.camera_names:
+            camera = bpy.data.objects[camera_name]
+            if camera:
+                # Apply location changes
+                camera.location.x += dx
+                camera.location.y += dy
+                camera.location.z += dz
 
-            # Apply rotation changes (convert degrees to radians for Blender)
-            camera.rotation_euler.x += np.radians(rx)
-            camera.rotation_euler.y += np.radians(ry)
-            camera.rotation_euler.z += np.radians(rz)
-            print(
-                f"Camera moved to: {camera.location}, Rotated to: {np.degrees(camera.rotation_euler.x):.2f}, {np.degrees(camera.rotation_euler.y):.2f}, {np.degrees(camera.rotation_euler.z):.2f} degrees"
-            )
-        else:
-            print("No camera available to move.")
+                # Apply rotation changes (convert degrees to radians for Blender)
+                camera.rotation_euler.x += np.radians(rx)
+                camera.rotation_euler.y += np.radians(ry)
+                camera.rotation_euler.z += np.radians(rz)
+                print(
+                    f"Camera moved to: {camera.location}, Rotated to: {np.degrees(camera.rotation_euler.x):.2f}, {np.degrees(camera.rotation_euler.y):.2f}, {np.degrees(camera.rotation_euler.z):.2f} degrees"
+                )
+            else:
+                print("No camera available to move.")
 
 
 def main():
     blend_path = "apartment.blend"  # Make sure this path is correct
 
     # Initialize the renderer with the blend file and camera
-    renderer = BlenderRenderer(blend_filepath=blend_path, camera_name="robo_cam")
+    renderer = BlenderRenderer(blend_filepath=blend_path, camera_names="robo_cam")
 
     # Example usage: Stream and render frames
     renderer.stream_headless(start_frame=1, end_frame=3)  # Render frames 1 to 10
