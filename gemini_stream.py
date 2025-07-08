@@ -4,6 +4,8 @@ import os
 import numpy as np
 import sys
 import tempfile
+import cProfile
+
 
 class BlenderRenderer:
     """
@@ -21,10 +23,26 @@ class BlenderRenderer:
         """
         self.blend_filepath = blend_filepath
         self.camera_name = camera_name
-        self.current_rendered_frame = None  # To store the last rendered frame as a NumPy array
-
-        self._load_blend_file()
+        self.current_rendered_frame = (
+            None  # To store the last rendered frame as a NumPy array
+        )
+        if blend_filepath.endswith(".usdc"):
+            self._load_usdc_file()
+        else:
+            self._load_blend_file()
         self._setup_render_settings()
+
+    def _load_usdc_file(self):
+        """
+        Loads the specified USD file into Blender.
+        """
+        if not os.path.exists(self.blend_filepath):
+            print(f"ERROR: USD file not found: {self.blend_filepath}")
+            sys.exit(1)
+
+        print(f"Loading .usdc file: {self.blend_filepath}")
+        bpy.ops.wm.usd_import(filepath=self.blend_filepath)
+        self.scene = bpy.context.scene
 
     def _load_blend_file(self):
         """
@@ -44,6 +62,11 @@ class BlenderRenderer:
         """
         self.scene.render.engine = "BLENDER_EEVEE_NEXT"
         # self.scene.eevee.samples = 1 # Eevee Next does not have samples in the same way
+        self.scene.eevee.taa_render_samples = 25
+        # self.scene.eevee.taa_samples = 5
+        # self.scene.eevee.use_gtao = True
+        bpy.context.scene.render.resolution_percentage = 100
+        # bpy.context.scene.render.use_simplify = True
 
         if self.camera_name in bpy.data.objects:
             self.scene.camera = bpy.data.objects[self.camera_name]
@@ -74,9 +97,11 @@ class BlenderRenderer:
         if camera_object is None:
             camera_object = self.scene.camera
             if not camera_object:
-                print("Error: No camera object specified and no active scene camera found.")
+                print(
+                    "Error: No camera object specified and no active scene camera found."
+                )
                 return None
-            if camera_object.type != 'CAMERA':
+            if camera_object.type != "CAMERA":
                 print(f"Error: Object '{camera_object.name}' is not a camera.")
                 return None
 
@@ -95,7 +120,7 @@ class BlenderRenderer:
 
         # Get sensor width and focal length
         # Blender's focal length is `lens` in millimeters
-        f_in_mm = cam_data.lens # Focal length in millimeters
+        f_in_mm = cam_data.lens  # Focal length in millimeters
 
         # Sensor size in millimeters
         # Blender's `sensor_fit` determines how `sensor_width` and `sensor_height` are used.
@@ -115,14 +140,14 @@ class BlenderRenderer:
         # This calculation needs to correctly handle `sensor_fit`
         # and pixel aspect ratio.
         pixel_aspect_ratio = render_props.pixel_aspect_x / render_props.pixel_aspect_y
-        
+
         # Determine the effective sensor size based on `sensor_fit`
-        if cam_data.sensor_fit == 'VERTICAL':
+        if cam_data.sensor_fit == "VERTICAL":
             # Sensor fit to vertical, so height is fixed.
             # Width scales with aspect ratio.
             s_u = render_width / (sensor_height_in_mm * pixel_aspect_ratio)
             s_v = render_height / sensor_height_in_mm
-        else: # 'HORIZONTAL' or 'AUTO' (which typically behaves like HORIZONTAL for landscape renders)
+        else:  # 'HORIZONTAL' or 'AUTO' (which typically behaves like HORIZONTAL for landscape renders)
             # Sensor fit to horizontal, so width is fixed.
             # Height scales with aspect ratio.
             s_u = render_width / sensor_width_in_mm
@@ -144,24 +169,21 @@ class BlenderRenderer:
         # shift_x and shift_y directly relate to the offset of the principal point.
         # Blender's `shift_x` and `shift_y` are relative to the *sensor dimensions*.
         # They express the shift as a fraction of the sensor width/height.
-        
+
         # When sensor_fit is HORIZONTAL or AUTO:
         cx = render_width / 2.0 - cam_data.shift_x * s_u
-        cy = render_height / 2.0 + cam_data.shift_y * s_v # Y-axis inversion for CV convention
-        
+        cy = (
+            render_height / 2.0 + cam_data.shift_y * s_v
+        )  # Y-axis inversion for CV convention
+
         # If sensor_fit is VERTICAL, then shift_x and shift_y are relative to sensor_height
         # and render_height, and need to be scaled by aspect ratio.
-        if cam_data.sensor_fit == 'VERTICAL':
+        if cam_data.sensor_fit == "VERTICAL":
             cx = render_width / 2.0 - cam_data.shift_x * s_u * pixel_aspect_ratio
             cy = render_height / 2.0 + cam_data.shift_y * s_v
 
-
         # Construct the intrinsic matrix
-        K = np.array([
-            [fx, 0, cx],
-            [0, fy, cy],
-            [0, 0, 1]
-        ], dtype=np.float64)
+        K = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=np.float64)
 
         return K
 
@@ -180,7 +202,6 @@ class BlenderRenderer:
         if "current_frame.png" in filepath:
             self.read_current_frame_from_file()
 
-
     def render_frame_to_numpy(self):
         """
         Renders the current frame to a temporary file, loads it into a NumPy array,
@@ -193,11 +214,11 @@ class BlenderRenderer:
             temp_filepath = tmp_file.name
 
         self.scene.render.filepath = temp_filepath
-        
+
         # In headless mode, write_still=True is generally required for the render result
         # to be saved/available, even if it's just to a temporary path.
-        bpy.ops.render.render(write_still=True) 
-        
+        bpy.ops.render.render(write_still=True)
+
         # Load the rendered image from the temporary file
         img = cv2.imread(temp_filepath, cv2.IMREAD_COLOR)
 
@@ -215,46 +236,57 @@ class BlenderRenderer:
             self.current_rendered_frame = None
             return None
 
-    def read_current_frame_from_file(self, filepath="rendered_frames/current_frame.png"):
+    def read_current_frame_from_file(
+        self, filepath="rendered_frames/current_frame.png"
+    ):
         """
         Reads the 'current_frame.png' file into the current_rendered_frame attribute
         and displays it.
         """
         if os.path.exists(filepath):
             self.current_rendered_frame = cv2.imread(filepath, cv2.IMREAD_COLOR)
-            if self.current_rendered_frame is not None:
-                cv2.imshow("Colour Image", self.current_rendered_frame)
-                cv2.waitKey(333)
-            else:
+            if self.current_rendered_frame is None:
                 print(f"ERROR: Could not read image from {filepath}")
         else:
             print(f"ERROR: File not found: {filepath}")
 
-    def render_single_frame_headless(self, output_dir="rendered_frames"):
-         # Create output directory if it doesn't exist
+    def render_single_frame_headless(
+        self, frame_number=1, output_dir="rendered_frames"
+    ):
+        """
+        Renders a single frame in headless mode.
+
+        Args:
+            frame_number (int): The frame number to render.
+            output_dir (str): The directory to save the rendered frame.
+        """
+        # Create output directory if it doesn't exist
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
             print(f"Created output directory: {output_dir}")
 
-        print(f"Starting headless frame rendering... ({start_frame} to {end_frame})")
+        print(f"Starting headless frame rendering for frame {frame_number}")
 
-        self.scene.frame_set(frame)
+        # Set the frame to render
+        self.scene.frame_set(frame_number)
+
         # Construct filepath for the current frame
-        frame_filename = f"frame_{frame:04d}.png"  # e.g., frame_0001.png
+        frame_filename = f"frame_{frame_number:04d}.png"  # e.g., frame_0001.png
         frame_filepath = os.path.join(output_dir, frame_filename)
+
+        # Render the frame
         self.render_frame_to_file(frame_filepath)
-        
-        # Render and update the 'current_frame.png' for immediate access
-        self.render_frame_to_file(os.path.join(output_dir, "current_frame.png"))
-        self.read_current_frame_from_file(os.path.join(output_dir, "current_frame.png"))
 
-        # If you wanted to get the numpy array of each rendered frame directly:
-        # self.render_frame_to_numpy() # This will update self.current_rendered_frame with each frame
+        # Also render and update the 'current_frame.png' for immediate access
+        current_frame_path = os.path.join(output_dir, "current_frame.png")
+        self.render_frame_to_file(current_frame_path)
+        self.read_current_frame_from_file(current_frame_path)
 
-        print("Finished rendering frame")
+        print(f"Finished rendering frame {frame_number}")
 
-
-    def stream_headless(self, start_frame=1, end_frame=50, output_dir="rendered_frames"):
+    def stream_headless(
+        self, start_frame=1, end_frame=50, output_dir="rendered_frames"
+    ):
         """
         Renders a sequence of frames in headless mode and saves them to files.
         Optionally updates an in-memory representation of the "current" frame.
@@ -277,15 +309,19 @@ class BlenderRenderer:
             frame_filename = f"frame_{frame:04d}.png"  # e.g., frame_0001.png
             frame_filepath = os.path.join(output_dir, frame_filename)
             self.render_frame_to_file(frame_filepath)
-            
+
             # Render and update the 'current_frame.png' for immediate access
             self.render_frame_to_file(os.path.join(output_dir, "current_frame.png"))
-            self.read_current_frame_from_file(os.path.join(output_dir, "current_frame.png"))
+            self.read_current_frame_from_file(
+                os.path.join(output_dir, "current_frame.png")
+            )
 
             # If you wanted to get the numpy array of each rendered frame directly:
             # self.render_frame_to_numpy() # This will update self.current_rendered_frame with each frame
 
-        print(f"Finished rendering {end_frame - start_frame + 1} frames to '{output_dir}'.")
+        print(
+            f"Finished rendering {end_frame - start_frame + 1} frames to '{output_dir}'."
+        )
 
     def move_camera(self, dx=0, dy=0, dz=0, rx=0, ry=0, rz=0):
         """
@@ -310,19 +346,21 @@ class BlenderRenderer:
             camera.rotation_euler.x += np.radians(rx)
             camera.rotation_euler.y += np.radians(ry)
             camera.rotation_euler.z += np.radians(rz)
-            print(f"Camera moved to: {camera.location}, Rotated to: {np.degrees(camera.rotation_euler.x):.2f}, {np.degrees(camera.rotation_euler.y):.2f}, {np.degrees(camera.rotation_euler.z):.2f} degrees")
+            print(
+                f"Camera moved to: {camera.location}, Rotated to: {np.degrees(camera.rotation_euler.x):.2f}, {np.degrees(camera.rotation_euler.y):.2f}, {np.degrees(camera.rotation_euler.z):.2f} degrees"
+            )
         else:
             print("No camera available to move.")
 
 
 def main():
-    blend_path = "apartment.blend" # Make sure this path is correct
+    blend_path = "apartment.blend"  # Make sure this path is correct
 
     # Initialize the renderer with the blend file and camera
     renderer = BlenderRenderer(blend_filepath=blend_path, camera_name="robo_cam")
 
     # Example usage: Stream and render frames
-    renderer.stream_headless(start_frame=1, end_frame=3) # Render frames 1 to 10
+    renderer.stream_headless(start_frame=1, end_frame=3)  # Render frames 1 to 10
 
     print(renderer.get_camera_intrinsics_blender())
 
@@ -334,11 +372,13 @@ if __name__ == "__main__":
     # normally or from within Blender's Python environment.
     try:
         # Check if bpy is already available (running inside Blender)
-        if 'bpy' in sys.modules:
-            main()
+        if "bpy" in sys.modules:
+            cProfile.run("main()")
         else:
             print("ERROR: This script must be run within Blender's Python environment.")
-            print("Please run Blender and execute this script from File -> Execute Script,")
+            print(
+                "Please run Blender and execute this script from File -> Execute Script,"
+            )
             print("or by using 'blender -b -P your_script_name.py'")
             sys.exit(1)
     except Exception as e:
